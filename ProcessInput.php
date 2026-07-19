@@ -173,6 +173,13 @@ if (SaveReplay() && !IsReplay()) {
 // here rather than being processed as an independent, non-idempotent action.
 // Requests that don't send expectedRevision (replays, any caller predating this
 // mechanism) skip the check entirely rather than being treated as invalid.
+// NOTE: this guards against a stale click after a prior response has already
+// landed; it does not by itself close a true multi-tab concurrent-request race
+// (the revision counter only advances at the end of GamestateUpdated(), so two
+// requests admitted before either finishes can both observe the same revision).
+// The FE's synchronous isPlayerInputInProgress gate is the primary defense for
+// the common rapid-double-click case this fix targets; this check is a
+// secondary, defense-in-depth layer, not a full concurrency lock.
 if (!IsReplay() && isset($_GET["expectedRevision"])) {
   $expectedRevision = intval($_GET["expectedRevision"]);
   $commandId = isset($_GET["commandId"]) ? preg_replace('/[^a-zA-Z0-9\-]/', '', $_GET["commandId"]) : "";
@@ -185,14 +192,23 @@ if (!IsReplay() && isset($_GET["expectedRevision"])) {
     }
     if (($playerID == 1 || $playerID == 2) && $commandId !== "") {
       // Pieces 19/20 (added by this fix): last-seen commandId for p1/p2, used to
-      // no-op an exact repeat (e.g. a retried identical request).
+      // no-op an exact repeat (e.g. a retried identical request). We store a
+      // short fixed-length hash of commandId rather than the raw ~36-char
+      // crypto.randomUUID() string: this cache row is a fixed 128-byte shmop
+      // segment shared with ~17 other pieces (connection timestamps, hero
+      // codes, chat flags, game status, etc. - see SHMOPLibraries.php), and
+      // two raw UUIDs (one per player) would push an ordinary game's row over
+      // budget on the very first exchange, silently corrupting the entire row
+      // (see WriteCache's bounds check). Dedup semantics are unaffected: the
+      // same commandId always hashes to the same value.
+      $commandIdHash = hash('crc32b', $commandId);
       $commandIdPiece = ($playerID == 1) ? 19 : 20;
-      $lastCommandId = strval($concurrencyCacheArr[$commandIdPiece - 1] ?? "");
-      if ($lastCommandId !== "" && $lastCommandId === $commandId) {
+      $lastCommandIdHash = strval($concurrencyCacheArr[$commandIdPiece - 1] ?? "");
+      if ($lastCommandIdHash !== "" && $lastCommandIdHash === $commandIdHash) {
         echo "Duplicate request already processed.";
         exit;
       }
-      SetCachePiece($gameName, $commandIdPiece, $commandId);
+      SetCachePiece($gameName, $commandIdPiece, $commandIdHash);
     }
   }
 }

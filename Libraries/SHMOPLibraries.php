@@ -30,8 +30,24 @@ function WriteCache($name, $data)
   if ($id == false) {
     exit;
   } else {
-    $serData = str_pad($serData, 128, "\0");
+    $size = shmop_size($id);
+    if (strlen($serData) > $size) {
+      // shmop_write() silently writes only the first $size bytes with no
+      // warning and no way to detect it from its return value alone once
+      // combined with str_pad() (which does nothing for an already-oversized
+      // string). That truncation would corrupt the serialized row so that
+      // every later ReadCache()/ReadCacheArray() call for this segment fails
+      // to unserialize and returns "" / null — not just the field that grew
+      // too large. Refuse the write and keep the last-known-good row instead
+      // of writing corrupted data.
+      error_log("WriteCache: payload " . strlen($serData) . " bytes exceeds cache segment size $size bytes for segment $name; write skipped to avoid corrupting the row");
+      return;
+    }
+    $serData = str_pad($serData, $size, "\0");
     $rv = shmop_write($id, $serData, 0);
+    if ($rv !== $size) {
+      error_log("WriteCache: shmop_write wrote $rv of $size bytes for segment $name");
+    }
   }
 }
 
