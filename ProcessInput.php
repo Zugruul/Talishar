@@ -162,6 +162,41 @@ if (SaveReplay() && !IsReplay()) {
   fclose($commandFile);
 }
 
+// Concurrency control (fixes #183: equipment/card double-activation under lag).
+// The FE (GameSlice.ts's playCard/submitButton/submitMultiButton thunks) sends
+// expectedRevision (the gamestate revision counter it last observed, piece 1 of
+// the shmop cache row - the same counter GamestateUpdated() below increments and
+// BuildGameState.php serves back to the client as `lastUpdate`) and a per-request
+// commandId. A second click fired before the first request's response updates
+// Redux state carries the *same* expectedRevision as the first; once the first
+// request finishes and bumps the counter, the second is now stale and rejected
+// here rather than being processed as an independent, non-idempotent action.
+// Requests that don't send expectedRevision (replays, any caller predating this
+// mechanism) skip the check entirely rather than being treated as invalid.
+if (!IsReplay() && isset($_GET["expectedRevision"])) {
+  $expectedRevision = intval($_GET["expectedRevision"]);
+  $commandId = isset($_GET["commandId"]) ? preg_replace('/[^a-zA-Z0-9\-]/', '', $_GET["commandId"]) : "";
+  $concurrencyCacheArr = ReadCacheArray($gameName);
+  if ($concurrencyCacheArr !== null) {
+    $currentRevision = intval($concurrencyCacheArr[0] ?? 0);
+    if ($currentRevision > 0 && $expectedRevision !== $currentRevision) {
+      echo "Stale request: gamestate has moved on.";
+      exit;
+    }
+    if (($playerID == 1 || $playerID == 2) && $commandId !== "") {
+      // Pieces 19/20 (added by this fix): last-seen commandId for p1/p2, used to
+      // no-op an exact repeat (e.g. a retried identical request).
+      $commandIdPiece = ($playerID == 1) ? 19 : 20;
+      $lastCommandId = strval($concurrencyCacheArr[$commandIdPiece - 1] ?? "");
+      if ($lastCommandId !== "" && $lastCommandId === $commandId) {
+        echo "Duplicate request already processed.";
+        exit;
+      }
+      SetCachePiece($gameName, $commandIdPiece, $commandId);
+    }
+  }
+}
+
 //Now we can process the command
 ProcessInput($playerID, $mode, $buttonInput, $cardID, $chkCount, $chkInput, false, $inputText);
 
