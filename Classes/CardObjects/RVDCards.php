@@ -104,17 +104,25 @@
 // }
 
 
-// class wrecking_ball_red extends Card {
+class wrecking_ball_red extends Card {
 
-//   function __construct($controller) {
-//     $this->cardID = "wrecking_ball_red";
-//     $this->controller = $controller;
-//     }
+  function __construct($controller) {
+    $this->cardID = "wrecking_ball_red";
+    $this->controller = $controller;
+    }
 
-//   function PlayAbility($from, $resourcesPaid, $target = '-', $additionalCosts = '-', $uniqueID = '-1', $layerIndex = -1) {
-//     return "";
-//   }
-// }
+  function ResolutionStepAttackTriggers() {
+    AddLayer("TRIGGER", $this->controller, $this->cardID);
+  }
+
+  function ProcessTrigger($uniqueID, $target = '-', $additionalCosts = '-', $from = '-') {
+    Draw($this->controller, effectSource: $this->cardID);
+    $discarded = DiscardRandom($this->controller, $this->cardID, $this->controller);
+    if (ModifiedPowerValue($discarded, $this->controller, "HAND", source: $this->cardID) >= 6) {
+      Intimidate();
+    }
+  }
+}
 
 
 ?>
